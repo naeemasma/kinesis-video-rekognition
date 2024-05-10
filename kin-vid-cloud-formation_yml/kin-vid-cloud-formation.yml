@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  S3Storage:
+    Type: String
+  LambdaSource:
+    Type: String
+    Default: dstrm-srch-fn.zip
+  AllowedIP:
+    Type: String
+
+Resources:
+  LambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonKinesisFullAccess
+      Policies:
+        - PolicyName: kin-vid-AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: logs:CreateLogGroup
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/kin-dstrm-srch-lambda:*"
+        - PolicyName: AWSLambdaElasticsearchExecutionRole-kin-vid
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: es:ESHttpPost
+                Resource: "*"
+
+  OpenSearchDomain:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      DomainName: kin-vid-domain
+      EngineVersion: "OpenSearch_2.5"
+      AdvancedSecurityOptions:
+        Enabled: false
+      ClusterConfig:
+        InstanceCount: 1
+        InstanceType: "t3.small.search"
+      CognitoOptions:
+        Enabled: false
+      DomainEndpointOptions:
+        CustomEndpointEnabled: false
+        EnforceHTTPS: true
+        TLSSecurityPolicy: Policy-Min-TLS-1-2-2019-07
+      EBSOptions:
+        EBSEnabled: true
+        VolumeSize: 10
+        VolumeType: "gp2"
+      EncryptionAtRestOptions:
+        Enabled: false
+      NodeToNodeEncryptionOptions:
+        Enabled: false
+      AccessPolicies:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              AWS: "*"
+            Action: "es:*"
+            Resource: !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/kin-vid-domain/*"
+            Condition:
+              IpAddress:
+                aws:SourceIp:
+                  Ref: AllowedIP
+          - Effect: "Allow"
+            Principal:
+              AWS: !GetAtt LambdaRole.Arn
+            Action: "es:*"
+            Resource: !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/kin-vid-domain/*"
+
+  FaceCollection:
+    Type: AWS::Rekognition::Collection
+    Properties:
+      CollectionId: kin-vid-rekog-collection
+
+  KinesisVideoStream:
+    Type: AWS::KinesisVideo::Stream
+    Properties:
+      DataRetentionInHours: 1
+      Name: kin-vid-stream
+
+  KinesisDataStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: kin-vid-data-stream
+      ShardCount: 1
+
+  StreamProcessorRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - rekognition.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonKinesisFullAccess
+        - arn:aws:iam::aws:policy/service-role/AmazonRekognitionServiceRole
+
+  StreamProcessor:
+    Type: AWS::Rekognition::StreamProcessor
+    Properties:
+      FaceSearchSettings:
+        CollectionId: kin-vid-rekog-collection
+        FaceMatchThreshold: 80
+      KinesisDataStream:
+        Arn: !GetAtt KinesisDataStream.Arn
+      KinesisVideoStream:
+        Arn: !GetAtt KinesisVideoStream.Arn
+      Name: kin-vid-stream-processor
+      RoleArn: !GetAtt StreamProcessorRole.Arn
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Architectures:
+        - x86_64
+      Code:
+        S3Bucket: !Ref S3Storage
+        S3Key: !Ref LambdaSource
+      Environment:
+        Variables:
+          ES_URL: !GetAtt OpenSearchDomain.DomainEndpoint
+          REGION: !Sub "${AWS::Region}"
+      FunctionName: kin-dstrm-srch-lambda
+      Handler: dstrm-srch-fn.on_message
+      PackageType: Zip
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.10
+
+  LambdaInvocation:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      Enabled: True
+      EventSourceArn: !GetAtt KinesisDataStream.Arn
+      FunctionName: !GetAtt LambdaFunction.Arn
+      MaximumRetryAttempts: 1
+      StartingPosition: LATEST
+
+  Cloud9Instance:
+    Type: AWS::Cloud9::EnvironmentEC2
+    Properties:
+      AutomaticStopTimeMinutes: 240
+      ConnectionType: CONNECT_SSH
+      Description: Dev environment
+      ImageId: resolve:ssm:/aws/service/cloud9/amis/ubuntu-18.04-x86_64
+      InstanceType: m5.large
+      Name: kin-vid-test-env
+
+Outputs:
+  OpenSearchURL:
+    Value: !GetAtt OpenSearchDomain.DomainEndpoint
