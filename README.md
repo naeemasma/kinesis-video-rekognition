@@ -1,3 +1,7 @@
+Project Summary: https://youtu.be/2_ZqRM0MVcc
+
+Project Presentation: https://youtu.be/bNZpUJhQOBY
+
 Objective:
 
 This project aims to use Amazon Kinesis Video Streams to ingest videos from camera devices and perform live face recognition and near real-time analysis using Amazon Rekognition Video. Amazon Kinesis Video Streams provides SDKs to securely stream video from connected devices to AWS for playback, storage, analytics, machine learning, and other processing. 
